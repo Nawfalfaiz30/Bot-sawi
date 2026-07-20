@@ -7,20 +7,22 @@ const {
     ButtonStyle
 } = require('discord.js');
 
-const { getRandomInt } = require('../helpers/utils.js'); // readJSON & writeJSON dihapus
+const { getRandomInt } = require('../helpers/utils.js');
 const { errorEmbed } = require('../helpers/embed.js');
-const User = require('../models/userSchema.js'); // 🟢 Import model User
-const Guild = require('../models/guildSchema.js'); // 🟢 Import model Guild
+const { askAI } = require('../helpers/aiHelper.js'); // 🟢 Import fungsi AI OpenAI
+const User = require('../models/userSchema.js'); 
+const Guild = require('../models/guildSchema.js'); 
 require('dotenv').config();
 
-const prefix = (process.env.PREFIX || 'sawi!').toLowerCase();
+// Mengambil prefix dari .env (pastikan di .env sudah diganti menjadi PREFIX=sw)
+const prefix = (process.env.PREFIX || 'sw').toLowerCase();
 
 module.exports = {
     name: Events.MessageCreate,
     once: false,
 
     async execute(message, client) {
-        // Abaikan bot / DM
+        // Abaikan bot / pesan dari DM
         if (message.author.bot || !message.guild) return;
 
         // ==================================================
@@ -66,10 +68,10 @@ module.exports = {
         // ==================================================
         // 2. AUTOMOD (Filter Kata Kasar)
         // ==================================================
-        let guildData = null; // Kita cache guildData di sini untuk dipakai di bawah juga
+        let guildData = null; 
         try {
             guildData = await Guild.findOne({ guildId: message.guild.id });
-            const badWords = guildData?.badWords || []; // 🟢 Ambil dari MongoDB (Per-Server)
+            const badWords = guildData?.badWords || []; 
 
             if (badWords.length > 0) {
                 const content = message.content.toLowerCase();
@@ -148,7 +150,6 @@ module.exports = {
 
             // B. Mention user yang sedang AFK
             if (message.mentions.users.size > 0) {
-                // Menggunakan for...of agar await bekerja dengan benar
                 for (const mentionedUser of message.mentions.users.values()) {
                     if (mentionedUser.id === message.author.id) continue;
 
@@ -167,7 +168,7 @@ module.exports = {
                             link: message.url
                         });
 
-                        await mentionedData.save(); // Simpan riwayat mention ke DB
+                        await mentionedData.save();
 
                         const afkReply = await message.reply({
                             content: `💤 **${mentionedUser.username}** sudah AFK selama **${timeAwayStr}**.\n📝 *"${afkData.reason || 'Ada urusan sebentar.'}"*`
@@ -181,9 +182,57 @@ module.exports = {
         }
 
         // ==================================================
-        // 4. PREFIX COMMAND HANDLER
+        // 4. TRIGGER AI OTOMATIS (Channel Khusus & Kata "sawi")
         // ==================================================
+        const TARGET_GUILD_ID = '1520001947590070412';
+        const TARGET_CHANNEL_ID = '1522226589230698526';
+        
+        const isSpecialChannel = message.guild.id === TARGET_GUILD_ID && message.channel.id === TARGET_CHANNEL_ID;
         const messageLower = message.content.toLowerCase();
+        const isSawiTrigger = messageLower === 'sawi' || messageLower.startsWith('sawi ');
+
+        // AI akan merespons JIKA: Pesan ada di channel khusus ATAU pesan diawali dengan "sawi"
+        if (isSpecialChannel || isSawiTrigger) {
+            let prompt = message.content.trim();
+
+            // Jika dipanggil pakai kata "sawi" di luar channel khusus, potong kata "sawi"-nya
+            if (!isSpecialChannel && isSawiTrigger) {
+                prompt = message.content.slice(4).trim();
+            }
+
+            // Penanganan jika prompt kosong
+            if (!prompt) {
+                if (isSpecialChannel && isSawiTrigger) {
+                    // Jika di channel khusus user hanya mengetik "sawi", anggap sebagai sapaan
+                    prompt = "Halo Sawi!";
+                } else {
+                    return message.reply('Iya? Ada yang bisa Sawi bantu? Tanya aja langsung (contoh: `sawi ibukota jepang`)!');
+                }
+            }
+
+            // Memunculkan status "Sawi is typing..." bawaan Discord tanpa mengirim pesan
+            await message.channel.sendTyping();
+
+            try {
+                // Memanggil OpenAI dan mengirimkan ID pengguna untuk memori
+                const answer = await askAI(prompt, message.author.id);
+                
+                // Batas pesan Discord adalah 2000 karakter
+                const safeAnswer = answer.length > 2000 
+                    ? answer.slice(0, 1980) + '\n\n... *(Terpotong)*' 
+                    : answer;
+
+                // Langsung membalas pesan pengguna dengan jawaban final
+                return message.reply(safeAnswer);
+            } catch (error) {
+                console.error('[ERROR SAWI TRIGGER]', error);
+                return message.reply('❌ Terjadi gangguan pada sistem AI Sawi.');
+            }
+        }
+        
+        // ==================================================
+        // 5. PREFIX COMMAND HANDLER
+        // ==================================================
         if (!messageLower.startsWith(prefix)) return;
 
         const args = message.content.slice(prefix.length).trim().split(/\s+/);

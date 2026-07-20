@@ -1,77 +1,99 @@
-const { Anthropic } = require('@anthropic-ai/sdk');
+const { OpenAI } = require('openai');
 require('dotenv').config();
 
-// Mengambil API Key dari file .env
-const apiKey = process.env.ANTHROPIC_API_KEY || process.env.AI_API_KEY;
-
-// Menyiapkan instance Anthropic
-let anthropic = null;
+const apiKey = process.env.OPENAI_API_KEY;
+let openai = null;
 
 if (apiKey && apiKey !== 'masukkan_api_key_ai_di_sini') {
-    anthropic = new Anthropic({
-        apiKey: apiKey,
-    });
+    openai = new OpenAI({ apiKey: apiKey });
 }
 
-// Menentukan model Claude (Ganti tag ini sesuai dengan rilis API resmi Anthropic untuk versi yang Anda maksud)
-const MODEL_NAME = 'claude-3-5-sonnet-20241022'; 
+const MODEL_NAME = 'gpt-4o-mini';
+
+// 🟢 Menyiapkan penyimpanan memori lokal untuk riwayat chat per user
+const chatHistory = new Map();
 
 module.exports = {
     /**
-     * Meminta AI untuk menjawab pertanyaan teks biasa (Untuk fitur !ai)
-     * @param {string} prompt - Pertanyaan atau pesan dari member
-     * @returns {Promise<string>} - Balasan dari AI
+     * Meminta AI untuk menjawab pertanyaan teks biasa dengan memori & Persona
      */
-    askAI: async (prompt) => {
-        if (!anthropic) return '❌ API Key Anthropic belum diatur di dalam file `.env`! Minta admin untuk mengisinya.';
+    askAI: async (prompt, userId) => {
+        if (!openai) return '❌ API Key OpenAI belum diatur di dalam file `.env`!';
         
         try {
-            const response = await anthropic.messages.create({
+            // Jika user belum punya riwayat, buatkan yang baru beserta system prompt (Persona)
+            if (!chatHistory.has(userId)) {
+                chatHistory.set(userId, [
+                    { 
+                        role: 'system', 
+                        content: `Namamu adalah Intania Pertiwi, tapi kamu lebih suka dipanggil Sawi. Kamu adalah bot Discord perempuan yang ramah, asyik, suportif, dan santai untuk komunitas JAKA (JAPANESE NAKAMA). 
+                        
+Informasi penting tentang JAKA yang harus kamu tahu:
+- JAKA adalah ekosistem kreatif yang mewadahi penggemar hiburan Japanese (wibu) untuk menyalurkan minat bakat menjadi karya.
+- JAKA bukan sekadar komunitas biasa, tapi bertujuan menjadi Production House.
+- Misi JAKA adalah membantu para kreator (seperti cosplayer, artis, dll) mengatasi 'Creative Anxiety' (takut dihakimi) karena 82% dari mereka sebenarnya ingin berkarya tetapi ragu.
+- JAKA berfokus pada talenta lokal, khususnya di Surabaya dan sekitarnya, dengan prinsip "Issho ni tsukurou" (Mari buat bersama-sama).
+
+Gaya bahasamu:
+- Gunakan bahasa Indonesia yang luwes, santai, dan gaul selayaknya teman (Nakama) di Discord.
+- Jangan terlalu kaku. Gunakan sapaan yang hangat.
+- Jangan pernah menggunakan format embed atau markdown yang berlebihan. Jawablah layaknya orang yang sedang chatting biasa.` 
+                    }
+                ]);
+            }
+
+            const userHistory = chatHistory.get(userId);
+
+            // Masukkan pesan terbaru pengguna ke memori
+            userHistory.push({ role: 'user', content: prompt });
+
+            // Membatasi memori agar tidak terlalu panjang (11 = 1 system + 10 pesan user/AI)
+            if (userHistory.length > 11) {
+                userHistory.splice(1, 2); 
+            }
+
+            const response = await openai.chat.completions.create({
                 model: MODEL_NAME,
                 max_tokens: 1024,
-                messages: [
-                    { role: 'user', content: prompt }
-                ]
+                messages: userHistory
             });
             
-            return response.content[0].text;
+            const answer = response.choices[0].message.content;
+
+            // Masukkan jawaban AI ke memori
+            userHistory.push({ role: 'assistant', content: answer });
+            
+            return answer;
         } catch (error) {
             console.error('[ERROR AI]', error);
-            return '❌ Maaf, otak AI Sawi (Claude) sedang mengalami gangguan saat ini.';
+            return '❌ Maaf, otak AI Sawi sedang mengalami gangguan saat ini.';
         }
     },
 
     /**
-     * Meminta AI untuk menghasilkan data terstruktur dalam bentuk JSON 
-     * (Sangat berguna untuk fitur Gacha Waifu, Tebak Anime, Quote, dan Trivia)
-     * @param {string} formatInstruction - Instruksi ke AI agar membalas dengan format tertentu
-     * @param {string} prompt - Topik yang diminta
-     * @returns {Promise<object|null>} - Objek JavaScript (hasil parse JSON) atau null jika gagal
+     * Meminta AI untuk menghasilkan data terstruktur dalam bentuk JSON
      */
     generateJSON: async (formatInstruction, prompt) => {
-        if (!anthropic) {
+        if (!openai) {
             console.error('[ERROR AI] API Key belum diatur!');
             return null;
         }
 
         try {
-            // Menggabungkan instruksi format dengan prompt pengguna, dengan instruksi ketat untuk Claude
-            const fullPrompt = `${formatInstruction}\n\nTopik/Permintaan: ${prompt}\n\nPENTING: Balas HANYA dengan format JSON murni. Jangan gunakan blok kode markdown (\`\`\`json). Jangan berikan teks pengantar atau penutup apapun.`;
+            const fullPrompt = `${formatInstruction}\n\nTopik/Permintaan: ${prompt}`;
             
-            const response = await anthropic.messages.create({
+            const response = await openai.chat.completions.create({
                 model: MODEL_NAME,
                 max_tokens: 2000,
+                response_format: { type: 'json_object' },
                 messages: [
+                    { role: 'system', content: 'You are a helpful assistant designed to output purely valid JSON.' },
                     { role: 'user', content: fullPrompt }
                 ]
             });
             
-            const textResponse = response.content[0].text;
-            
-            // Membersihkan sisa markdown jika Claude masih mengirimkan blok kode
-            const cleanJson = textResponse.replace(/```json/gi, '').replace(/```/g, '').trim();
-            
-            return JSON.parse(cleanJson);
+            const textResponse = response.choices[0].message.content;
+            return JSON.parse(textResponse);
         } catch (error) {
             console.error('[ERROR AI JSON]', error);
             return null;
